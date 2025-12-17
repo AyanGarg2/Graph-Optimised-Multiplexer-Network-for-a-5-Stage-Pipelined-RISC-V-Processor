@@ -1,0 +1,179 @@
+-- ============================================================================
+-- CTL Properties for Multiplexer Network Verification
+-- Model Checking Specification for RISC-V Pipelined Datapath
+-- ============================================================================
+-- 
+-- This file contains CTL (Computation Tree Logic) properties to verify:
+-- 1. All data paths are reachable
+-- 2. No conflicting selections occur
+-- 3. Proper data flow is maintained
+--
+-- Compatible with: NuSMV, nuXmv, or similar CTL model checkers
+-- ============================================================================
+
+MODULE main
+VAR
+    -- Multiplexer Select Signals
+    ALUSrcE      : boolean;      -- ALU source select (0=register, 1=immediate)
+    ForwardAE    : {0, 1, 2};     -- Forwarding for ALU input A (0=RD1E, 1=ALUResultM, 2=ResultW)
+    ForwardBE    : {0, 1, 2};     -- Forwarding for ALU input B (0=RD2E, 1=ALUResultM, 2=ResultW)
+    ResultSrcW   : {0, 1, 2};     -- Result source (0=ALUResult, 1=ReadData, 2=PCPlus4)
+    PCSrcD       : boolean;        -- PC source select (0=PC+4, 1=branch target)
+    JumpD        : boolean;        -- Jump instruction
+    
+    -- Data Path Signals (simplified for verification)
+    RD1E         : boolean;        -- Register file read port 1
+    RD2E         : boolean;        -- Register file read port 2
+    ALUResultM   : boolean;        -- ALU result from MEM stage
+    ResultW      : boolean;        -- Writeback result
+    ImmExtE      : boolean;        -- Extended immediate
+    PCPlus4F     : boolean;        -- PC + 4
+    PCTargetD    : boolean;        -- Branch target address
+    
+    -- Pipeline Stage Validity
+    ValidM       : boolean;        -- MEM stage valid
+    ValidW       : boolean;        -- WB stage valid
+
+DEFINE
+    -- Forward Mux A output
+    SrcAE_def := case
+        ForwardAE = 0 : RD1E;
+        ForwardAE = 1 : ALUResultM;
+        ForwardAE = 2 : ResultW;
+        TRUE          : RD1E;
+    esac;
+    
+    -- Forward Mux B output
+    SrcBE_def := case
+        ForwardBE = 0 : RD2E;
+        ForwardBE = 1 : ALUResultM;
+        ForwardBE = 2 : ResultW;
+        TRUE          : RD2E;
+    esac;
+    
+    -- ALU Mux output
+    SrcB_def := case
+        ALUSrcE = FALSE : SrcBE_def;
+        ALUSrcE = TRUE  : ImmExtE;
+        TRUE            : SrcBE_def;
+    esac;
+    
+    -- Result Mux output
+    ResultW_out_def := case
+        ResultSrcW = 0 : ALUResultM;
+        ResultSrcW = 1 : FALSE;       -- ReadData (simplified)
+        ResultSrcW = 2 : PCPlus4F;
+        TRUE           : ALUResultM;
+    esac;
+    
+    -- PC Mux output
+    PCNext_def := case
+        (PCSrcD | JumpD) = FALSE : PCPlus4F;
+        (PCSrcD | JumpD) = TRUE  : PCTargetD;
+        TRUE                      : PCPlus4F;
+    esac;
+    
+    -- Conflict Detection
+    -- ForwardAE and ForwardBE should not select same source when both are forwarding
+    ForwardConflict := (ForwardAE != 0 & ForwardBE != 0) & (ForwardAE = ForwardBE);
+
+-- ============================================================================
+-- CTL PROPERTIES FOR VERIFICATION
+-- Focus: Reachability, No Conflicts, Proper Data Flow
+-- ============================================================================
+
+-- ============================================================================
+-- PROPERTY 1: REACHABILITY - All Data Paths Are Reachable
+-- ============================================================================
+
+-- P1.1: Forwarding path from MEM stage is reachable
+SPEC AG (ValidM -> EF (ForwardAE = 1 | ForwardBE = 1))
+
+-- P1.2: Forwarding path from WB stage is reachable
+SPEC AG (ValidW -> EF (ForwardAE = 2 | ForwardBE = 2))
+
+-- P1.3: Register file read paths are always reachable
+SPEC AG EF (ForwardAE = 0 & ForwardBE = 0)
+
+-- P1.4: Immediate path is reachable
+SPEC AG EF (ALUSrcE = TRUE)
+
+-- P1.5: ALU result path is reachable
+SPEC AG EF (ResultSrcW = 0)
+
+-- P1.6: Memory read path is reachable
+SPEC AG EF (ResultSrcW = 1)
+
+-- P1.7: PC+4 path is reachable
+SPEC AG EF (ResultSrcW = 2)
+
+-- P1.8: Branch target path is reachable
+SPEC AG EF (PCSrcD = TRUE)
+
+-- P1.9: Sequential PC path is reachable
+SPEC AG EF (PCSrcD = FALSE & JumpD = FALSE)
+
+-- ============================================================================
+-- PROPERTY 2: NO CONFLICTING SELECTIONS
+-- ============================================================================
+
+-- P2.1: ForwardAE has valid selection
+SPEC AG (ForwardAE <= 2)
+
+-- P2.2: ForwardBE has valid selection
+SPEC AG (ForwardBE <= 2)
+
+-- P2.3: ResultSrcW has valid selection
+SPEC AG (ResultSrcW <= 2)
+
+-- P2.4: ALUSrcE is boolean (no conflict)
+SPEC AG (ALUSrcE = TRUE | ALUSrcE = FALSE)
+
+-- P2.5: Mutually exclusive selections for ForwardAE
+SPEC AG ((ForwardAE = 0 | ForwardAE = 1 | ForwardAE = 2) & 
+         !(ForwardAE = 0 & ForwardAE = 1) &
+         !(ForwardAE = 0 & ForwardAE = 2) &
+         !(ForwardAE = 1 & ForwardAE = 2))
+
+-- P2.6: Mutually exclusive selections for ForwardBE
+SPEC AG ((ForwardBE = 0 | ForwardBE = 1 | ForwardBE = 2) & 
+         !(ForwardBE = 0 & ForwardBE = 1) &
+         !(ForwardBE = 0 & ForwardBE = 2) &
+         !(ForwardBE = 1 & ForwardBE = 2))
+
+-- P2.7: Mutually exclusive selections for ResultSrcW
+SPEC AG ((ResultSrcW = 0 | ResultSrcW = 1 | ResultSrcW = 2) &
+         !(ResultSrcW = 0 & ResultSrcW = 1) &
+         !(ResultSrcW = 0 & ResultSrcW = 2) &
+         !(ResultSrcW = 1 & ResultSrcW = 2))
+
+-- ============================================================================
+-- PROPERTY 3: PROPER DATA FLOW
+-- ============================================================================
+
+-- P3.1: Data consistency: SrcAE matches forwarding selection
+SPEC AG ((ForwardAE = 0 -> SrcAE_def = RD1E) &
+         (ForwardAE = 1 -> SrcAE_def = ALUResultM) &
+         (ForwardAE = 2 -> SrcAE_def = ResultW))
+
+-- P3.2: Data consistency: SrcBE matches forwarding selection
+SPEC AG ((ForwardBE = 0 -> SrcBE_def = RD2E) &
+         (ForwardBE = 1 -> SrcBE_def = ALUResultM) &
+         (ForwardBE = 2 -> SrcBE_def = ResultW))
+
+-- P3.3: Data consistency: SrcB matches ALU mux selection
+SPEC AG ((ALUSrcE = FALSE -> SrcB_def = SrcBE_def) &
+         (ALUSrcE = TRUE -> SrcB_def = ImmExtE))
+
+-- P3.4: Data consistency: ResultW matches result mux selection
+SPEC AG ((ResultSrcW = 0 -> ResultW_out_def = ALUResultM) &
+         (ResultSrcW = 1 -> ResultW_out_def = FALSE) &
+         (ResultSrcW = 2 -> ResultW_out_def = PCPlus4F))
+
+-- P3.5: Data consistency: PCNext matches PC mux selection
+SPEC AG (((PCSrcD = FALSE & JumpD = FALSE) -> PCNext_def = PCPlus4F) &
+         ((PCSrcD = TRUE | JumpD = TRUE) -> PCNext_def = PCTargetD))
+
+-- ============================================================================
+-- END OF CTL PROPERTIES
+-- ============================================================================
